@@ -1,0 +1,9 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+from coil_functions import *
+from flux_surf_volume import get_flux_vol
+plt.ion()
+plt.style.use('ggplot')
+
+Bmax=43.8*1.0e-3 #43.8 milli Tesla

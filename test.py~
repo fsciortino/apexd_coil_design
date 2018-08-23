@@ -1,0 +1,7 @@
+import coil_turns_fields
+import numpy as np
+
+grid_defs=[50,50,-300e-3,300e-3,-280e-3,280e-3]
+nt_x=10
+nt_z=10
+xm,zm,Bxm,Bzm,Bs,rAm=coil_field.coil_fields(I[0],rs1,rs2,zs1,zs2,*grid_defs,nt_x,nt_z)

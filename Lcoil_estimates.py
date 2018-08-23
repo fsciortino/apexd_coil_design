@@ -1,0 +1,298 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.special import ellipk, ellipe
+import matplotlib.ticker as ticker
+from coil_functions import *
+from flux_surf_volume import get_flux_vol
+import scipy.interpolate as interp
+import matplotlib.patches as patches
+
+plt.ion()
+plt.style.use('ggplot') #'dark_background'
+import sys
+try:
+    import nlopt
+except:
+    raise ValueError('nlopt not available. Use Python virtualenv!')
+
+plot_bias = False
+plot_stab = False
+plot_opt1=False
+fv_calc=False # consider finite-volume in coil stability calculation
+
+g = 9.80665
+charging_pos=-0.15
+Ips=10 # current from power supply
+d_wire = 2.0e-3 # wire diameter
+
+# L-coil
+nr_l=9  
+nz_l=47 # basically fixed by bobbin size
+tz_l=100.0e-3; tr_l=22.0e-3
+I_l=nr_l*nz_l*Ips #5.0e3
+r_l=0.085 #0.106 #0.08# expected L-coil winding # 0.08 #former test
+z_l=0.09 #0.07 #10
+
+# F-coil
+nr_f=100  #dense default
+nz_f=100  #dense default
+tz_f = 25.0e-3; tr_f = 15.0e-3 #fixed/measured
+I_f=2500 #3895.32  #value from NIFS test
+r_f=0.0445 # Major radius 52mm - 15mm/2.0  #fixed/measured
+m_f=0.2845 #fixed/measured
+z_f=0.0   #fixed
+
+# vector for normalization of parameters
+x_init = [I_l,I_f,r_l,z_l]
+                                               
+
+# -------------------------------
+def force_imbalance_fv(x):
+    I_l = x[0]
+    I_f = x[1]
+    r_l = x[2]
+    z_l = x[3]
+    nz_l= x[4] # use #turns rather than thickness assuming wire with d=2mm
+    nr_l=x[5]
+
+    # Current through each turn of L-coil:
+    num_turns=nz_l*nr_l
+    I_l_per_turn = I_l /num_turns # units: A (not AT)
+
+    # get magnetic force from each turn
+    fm = 0.0
+    for iz in range(nz_l):
+        # Vertical position of turn (recall that z_l and r_l are positions of coil center)
+        z_turn = z_l - d_wire * float(nz_l)/2.0 + iz * d_wire
+        
+        for ir in range(nr_l):
+            # radial position of turn
+            r_turn = r_l - d_wire * float(nr_l)/2.0 + ir * d_wire
+
+            # Compute force from turn in L-coil on F-coil
+            fm += - 2*np.pi*r_f*I_f*Br(I_l_per_turn,r_turn,z_turn,r_f,z_f)
+
+    # subtract gravitational force
+    fg = m_f * g
+
+    return abs(fm - fg)
+    
+    
+# Optimization setup
+def force_imbalance(x):    
+    force_mag = - 2*np.pi*r_f*x[1]*Br(x[0],x[2],x[3],r_f,z_f)
+    force_grav = m_f * g
+    return abs(force_mag - force_grav)
+
+def gauss(xx,xbar,s):
+    x0=xx[0]/r_f; x1=xx[1]/r_f
+    return np.exp(-((x0-xbar[0])**2+(x1-xbar[1])**2)/s**2)
+
+xbar_slide=[2.5,3.0]; s_slide=1.5
+xbar_tilt=[3.0,3.0]; s_tilt=1.5
+opt1_cnt=0
+tot_list=[];term1_list=[];term2_list=[];term3_list=[];term4_list=[];term5_list=[]
+
+def tot_objective(x, grad, eta, x_init):
+    # objective function for optimization, with regularization by parameters in eta
+    # Normalization required for effective optimization
+    I_l = x_init[0]*x[0]
+    I_f = x_init[1]*x[1]
+    r_l = x_init[2]*x[2]
+    z_l = x_init[3]*x[3]
+    term1=force_imbalance_fv([I_l,I_f,r_l,z_l,nz_l,nr_l]) # number of turns not currently optimized
+    term2 = -eta[0]*gauss([r_l,z_l],xbar_slide,s_slide)
+    term3 = -eta[1]*gauss([r_l,z_l],xbar_tilt,s_tilt)
+    term4= eta[2]*I_l
+    term5= eta[3]*I_f
+
+    global opt1_cnt; opt1_cnt+=1    
+    tot=term1+term2+term3+term4+term5
+
+    tot_list.append(tot); term1_list.append(term1); term2_list.append(term2)
+    term3_list.append(term3); term4_list.append(term4); term5_list.append(term5)
+    #print tot, "---", term1,term2,term3,term4,term5
+    return tot
+
+if plot_opt1:
+    plt.figure(111)
+    plt.plot(range(opt1_cnt),tot_list,'ko', label='tot')
+    plt.plot(range(opt1_cnt),term1_list,'ro', label='term #1')
+    plt.plot(range(opt1_cnt),term2_list,'bo', label='term #2')
+    plt.plot(range(opt1_cnt),term3_list,'go', label='term #3')
+    plt.plot(range(opt1_cnt),term4_list,'mo', label='term #4')
+    plt.plot(range(opt1_cnt),term5_list,'co', label='term #5')
+    plt.ylim([-1.5e-5,1e-4])
+    plt.legend()
+    plt.show()
+    
+if plot_bias:
+    plt.figure()
+    x1=np.linspace(0.0,5.0,100); x2=np.linspace(0.0,5.0,100);
+    stab_bias_slide=np.zeros((len(x1),len(x2)))
+    stab_bias_tilt=np.zeros((len(x1),len(x2)))
+    for i in range(len(x1)):
+        for j in range(len(x2)):
+            stab_bias_slide[i,j]= np.exp(-((x1[i]-xbar_slide[0])**2+(x2[j]-xbar_slide[1])**2)/s_slide**2)
+            stab_bias_tilt[i,j]=np.exp(-((x1[i]-xbar_tilt[0])**2+(x2[j]-xbar_tilt[1])**2)/s_tilt**2)
+    X1,X2=np.meshgrid(x1,x2)
+    axx1=plt.subplot(2,1,1)
+    plt.contourf(X2,X1,stab_bias_slide,100)
+    cbar=plt.colorbar(label='slide bias amplitude')
+    plt.ylabel(r'z [$r_f$ units]')
+    axx2=plt.subplot(2,1,2)
+    plt.contourf(X2,X1,stab_bias_tilt,100)
+    cbar=plt.colorbar(label='tilt bias amplitude')
+    plt.ylabel(r'z [r$_f$ units]')
+    plt.xlabel(r'r [r$_f$ units]')
+  
+def vertical_freq(x):
+    return 1.0/(2*np.pi)*np.sqrt(-2*np.pi*r_f*x[1]*dBrdz(x[0],x[2],z_f,r_f,x[3])/m_f)
+
+
+############## Optimization
+   
+print "Optimizing L-coil parameters"
+opt = nlopt.opt(nlopt.LN_SBPLX, 4)  
+opt.set_lower_bounds([0.1,0.99,0.99,0.2])# * opt.get_dimension())
+opt.set_upper_bounds([3.0,1.01,1.01,2.0])# * opt.get_dimension())
+opt.set_xtol_abs(1e-5)
+    
+eta_1 = [1.0e-5,5.0e-4,5.0e-5,1.0e-7]
+objective= lambda x,grad: tot_objective(x,grad,eta_1,x_init)
+    
+opt.set_min_objective(objective)
+guess = np.asarray([1.0,1.0,1.0,1.0])
+res = opt.optimize(guess)
+
+# Save optimized parameters:
+I_l_opt = res[0]*x_init[0]
+I_f_opt = res[1]*x_init[1]
+r_l_opt = res[2]*x_init[2]
+z_l_opt = res[3]*x_init[3]
+
+print "*******************************************"
+print "(real units) I_l=",I_l_opt, ", I_f=",I_f_opt, ", r_l=",r_l_opt, ", z_l=",z_l_opt
+print "(F units) r_l=",r_l_opt/r_f, ", z_l=",z_l_opt/r_f
+print "Force imbalance: ", force_imbalance_fv([I_l_opt,I_f_opt,r_l_opt,z_l_opt,nz_l,nr_l])
+print "Vertical instability frequency: ",  vertical_freq([I_l_opt,I_f_opt,r_l_opt,z_l_opt])
+print "********************************************"
+    
+# Plot L and F coil flux surfaces. These are now taken to have finite size
+fig1 = plt.figure()
+axx=fig1.add_subplot(1,1,1, axisbg='b')
+    
+# multicoil_fields requires central spatial positions
+
+# Set If=0 to study L-coil fields at F-coil position --------------------------
+
+X,Z,Bxm,Bzm,Bs,rAm=multicoil_fields([I_l_opt,0.0],[z_l_opt,z_f],[r_l_opt,r_f],[tz_l,tz_f],[tr_l,tr_f],[nz_l,nz_f],[nr_l,nr_f])
+   
+cs = plt.contourf(Z,X,rAm*1e3,100,cmap=plt.cm.jet, extend="both")
+cbar = plt.colorbar()
+cbar.set_label(r' $2 \pi r A_{\theta} \times 10^3 [T m^2]$',fontsize=16)
+CS = plt.contour(Z,X,rAm*1.0e3)
+plt.clabel(CS, inline=1, fontsize=13, linewidth=3, colors='white')
+plt.xlabel('r [m]'); plt.ylabel('z [m]')
+    
+p1=patches.Rectangle((-r_f-tr_f/2.0,z_f-tz_f/2.0),tr_f,tz_f,edgecolor='red',facecolor='white')
+p2=patches.Rectangle((r_f-tr_f/2.0,z_f-tz_f/2.0),tr_f,tz_f,edgecolor='red',facecolor='white')
+axx.add_patch(p1); axx.add_patch(p2)
+    
+p1=patches.Rectangle((-r_l_opt-tr_l/2.0,z_l_opt-tz_l/2.0),tr_l,tz_l,edgecolor='red',facecolor='white')
+p2=patches.Rectangle((r_l_opt-tr_l/2.0,z_l_opt-tz_l/2.0),tr_l,tz_l,edgecolor='red',facecolor='white')
+axx.add_patch(p1); axx.add_patch(p2)
+
+# Plot tot field
+fig1 = plt.figure()
+axx=fig1.add_subplot(1,1,1, axisbg='b')
+cs = plt.contourf(Z,X,Bs,100,cmap=plt.cm.jet, extend="both")
+cbar = plt.colorbar()
+cbar.set_label(r'$B_{tot} [T]$', fontsize=16)
+CS = plt.contour(Z,X,Bs)
+plt.clabel(CS, inline=1, fontsize=13, linewidth=3, colors='white')
+plt.xlabel('r [m]'); plt.ylabel('z [m]')
+    
+# draw shapes of coils
+p1=patches.Rectangle((-r_f-tr_f/2.0,z_f-tz_f/2.0),tr_f,tz_f,edgecolor='red',facecolor='white')
+p2=patches.Rectangle((r_f-tr_f/2.0,z_f-tz_f/2.0),tr_f,tz_f,edgecolor='red',facecolor='white')
+axx.add_patch(p1); axx.add_patch(p2)
+    
+p1=patches.Rectangle((-r_l_opt-tr_l/2.0,z_l_opt-tz_l/2.0),tr_l,tz_l,edgecolor='red',facecolor='white')
+p2=patches.Rectangle((r_l_opt-tr_l/2.0,z_l_opt-tz_l/2.0),tr_l,tz_l,edgecolor='red',facecolor='white')
+axx.add_patch(p1); axx.add_patch(p2)
+
+
+# Plot h(z)=B_r(z)/Il
+zaxis_idx=np.argmin(np.abs(Z[:,0]-0.0))
+xidx=np.argmin(np.abs(X[0,:]-r_f))
+zzz=Z[:,0]
+Br_at_Fcoil=Bxm[:,xidx]
+plt.figure()
+plt.plot(zzz,Br_at_Fcoil)
+
+plt.figure()
+CS=plt.contour(Z,X,Bxm,levels=np.linspace(Bxm.min(),Bxm.max(),50),linewidths=5, linestyles='solid')
+plt.contourf(Z,X,Bxm,levels=np.linspace(Bxm.min(),Bxm.max(),50))
+plt.xlabel('r [m]'); plt.ylabel('z [m]')
+    
+
+    
+# ------------------------------
+# Stability plots (set r_f=1.0)
+
+# fix (r,z) for SC F-coil and vary L-coil parameters
+if plot_stab:
+    r_l_arr=np.arange(0.05, 5.0, 0.03)
+    z_l_arr=np.arange(0.05, 5.0, 0.03)
+    dBrdz_arr=np.zeros((r_l_arr.shape[0],z_l_arr.shape[0]))
+    Br_arr=np.zeros((r_l_arr.shape[0],z_l_arr.shape[0]))
+    dBzdr_arr=np.zeros((r_l_arr.shape[0],z_l_arr.shape[0]))
+    tilt_var_arr=np.zeros((r_l_arr.shape[0],z_l_arr.shape[0]))
+    unstable_param=-np.ones((r_l_arr.shape[0],z_l_arr.shape[0]))
+    for i in range(r_l_arr.shape[0]):
+        for j in range(z_l_arr.shape[0]):
+            r=r_l_arr[i]; z=z_l_arr[j]
+            if fv_calc:
+                Br_arr[i,j]=Br_fv(I_l,r,z,1.0,0,nr_l,nz_l)
+                dBrdz_arr[i,j]=dBrdz_fv(I_l,r,z,1.0,0,nr_l,nz_l)
+                dBzdr_arr[i,j]=dBzdr_fv(I_l,r,z,1.0,0,nr_l,nz_l)
+                tilt_var_arr[i,j]=Bz_fv(I_l,r,z,1.0,0,nr_l,nz_l)+1.0 * dBrdz_arr[i,j]
+            else:
+                Br_arr[i,j]=Br(I_l,r,z,1.0,0)
+                dBrdz_arr[i,j]=dBrdz(I_l,r,z,1.0,0) # two inversions cancel out
+                dBzdr_arr[i,j]=dBzdr(I_l,r,z,1.0,0)
+                tilt_var_arr[i,j]=Bz(I_l,r,z,1.0,0)+1.0 * dBrdz_arr[i,j]
+            if dBzdr_arr[i,j]>0:
+                unstable_param[i,j]=dBzdr_arr[i,j]
+            if -tilt_var_arr[i,j]>0: #note -ve sign
+                unstable_param[i,j]+= tilt_var_arr[i,j]
+            # note that magnitudes of unstable_param are arbitrary
+            
+    # plot 
+    fig=plt.figure(figsize=(8,10))
+    ax1=plt.subplot(3,1,1)
+    Xx,Yy=np.meshgrid(r_l_arr,z_l_arr)
+    CS=plt.contourf(Yy,Xx,np.log10(-dBrdz_arr),100)
+    plt.colorbar(label='log-amplitude')
+    ax1.set_title('Vertically unstable')
+    ax1.set_ylabel(r'z [$r_F$]')
+    
+    ax2=plt.subplot(3,1,2)
+    CS=plt.contourf(Yy,Xx,np.log10(dBzdr_arr),100)
+    plt.colorbar(label='log-amplitude')
+    ax2.set_title('Slide unstable')
+    ax2.set_ylabel(r'z $[r_F]$')
+    
+    ax3=plt.subplot(3,1,3)
+    CS=plt.contourf(Yy,Xx,np.log10(-tilt_var_arr),100)
+    cbar=plt.colorbar(label='log-amplitude')
+    ax3.set_title('Tilt unstable')
+    ax3.set_ylabel(r'z $[r_F]$')
+    ax3.set_xlabel(r'r $[r_F]$')
+    
+    plt.figure()
+    ax11=plt.subplot(1,1,1)
+    plt.contourf(Yy,Xx,np.log10(unstable_param),100)
+    plt.colorbar(label='log-amplitude')
+    ax11.set_title('Vertically unstable')

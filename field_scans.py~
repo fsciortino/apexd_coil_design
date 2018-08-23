@@ -1,0 +1,73 @@
+import numpy as np
+from coil_field import *
+import matplotlib.pyplot as plt
+plt.ion()
+
+# base parameters
+ci1,rs1, rs2, zs1, zs2 = 3e4, 0.066, 0.84, -0.009, 0.009
+# grid_defs = [nx,nz,xmin,xmax,zmin,zmax]
+grid_defs=[50,50,-200e-3,200e-3,-200e-3,200e-3]
+subplots=True
+option=2
+
+# scan over ci1
+if option==0 or option ==1:
+	ci1_arr = np.linspace(1e3, 1e5, 4)
+	Bs_scan = []
+
+	if subplots: fig1=plt.figure(figsize=(12,8))
+	    
+	for k in range(len(ci1_arr)):
+	    ci=ci1_arr[k]
+	    xm, zm, Bxm, Bzm, Bs, rAm= coil_fields(ci,rs1,rs2,zs1,zs2, *grid_defs)
+            Bxm=Bxm[xm!=0,:][:,zm!=0]
+            Bzm=Bzm[xm!=0,:][:,zm!=0]
+            Bs=Bs[xm!=0,:][:,zm!=0]
+            rAm=rAm[xm!=0,:][:,zm!=0]
+            xm=xm[xm!=0]; zm=zm[zm!=0]
+            X, Z = np.meshgrid(xm, zm)
+            
+            if subplots:
+	        fig1.add_subplot(2,2,k)
+	    else:
+	         plt.figure()
+	    if option==0:
+	    	plt.contourf(Z,X,Bs.T,100)
+	    elif option==1:
+                phi= 2*np.pi*rAm
+	    	plt.contourf(Z,X,phi.T,100)#, levels=np.linspace(min(phi.flatten()),max(phi.flatten()),10))
+                             
+                plt.title(r' $2 \pi r A_{\theta}$')
+	    #plt.pcolor(Bs)
+	    
+	    plt.xlim([min(xm),max(xm)])
+	    plt.ylim([min(zm),max(zm)])
+	    plt.show()
+	    plt.colorbar()
+	    Bs_scan.append(max(Bs.flatten()))
+
+	#plt.clim([0,max(Bs.flatten())])
+	plt.figure()
+	plt.plot(ci1_arr, Bs_scan)
+	plt.show()
+
+# make quiver plot  
+if option==2:   
+	ci=30000
+	xm, zm, Bxm, Bzm, Bs, rAm= coil_fields(ci,rs1,rs2,zs1,zs2, *grid_defs)
+        Bxm=Bxm[xm!=0,:][:,zm!=0]
+        Bzm=Bzm[xm!=0,:][:,zm!=0]
+        Bs=Bs[xm!=0,:][:,zm!=0]
+        rAm=rAm[xm!=0,:][:,zm!=0]
+        xm=xm[xm!=0]; zm=zm[zm!=0]
+        X, Z = np.meshgrid(xm, zm)
+	plt.figure()
+
+	plt.quiver(X,Z,Bxm,Bzm)
+	#plt.pcolor(Bs)
+	#plt.clim(
+	plt.xlim([min(xm),max(xm)])
+	plt.ylim([min(zm),max(zm)])
+	plt.show()    
+
+
